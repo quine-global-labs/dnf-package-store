@@ -1,17 +1,19 @@
 import 'package:flutter/material.dart';
 import 'dnf_service.dart';
+import 'category_service.dart';
+import 'settings_page.dart';
 
 void main() {
-  runApp(const PkgLauncherApp());
+  runApp(const DnfPackageStoreApp());
 }
 
-class PkgLauncherApp extends StatelessWidget {
-  const PkgLauncherApp({super.key});
+class DnfPackageStoreApp extends StatelessWidget {
+  const DnfPackageStoreApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Package Launcher',
+      title: 'DNF Package Store',
       theme: ThemeData(colorSchemeSeed: Colors.indigo, useMaterial3: true),
       home: const SearchPage(),
     );
@@ -39,6 +41,111 @@ class _SearchPageState extends State<SearchPage> {
   final List<String> _installLog = [];
   final ScrollController _logScroll = ScrollController();
   List<LaunchTarget> _launchTargets = [];
+  bool _uninstalling = false;
+
+  bool _packageKitAvailable = false;
+  bool _installingPackageKit = false;
+  CategoryIndex? _categoryIndex;
+  String? _activeCategory; // null = unfiltered; '' sentinel = "Other"
+  bool _loadingCategoryResults = false;
+
+  List<RepoInfo> _repos = [];
+  String? _selectedRepo; // null = all enabled repos mixed together
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCategories();
+    DnfService.listRepos().then((repos) {
+      if (mounted) setState(() => _repos = repos);
+    });
+  }
+
+  void _onRepoChanged(String? repo) {
+    setState(() {
+      _selectedRepo = repo;
+      _allPackages = null;
+    });
+    if (_activeCategory != null) {
+      _filterByCategory(_activeCategory!);
+    } else if (_queryController.text.trim().isNotEmpty) {
+      _doSearch();
+    } else if (_results.isNotEmpty) {
+      _doListAll();
+    }
+  }
+
+  Future<void> _loadCategories() async {
+    _packageKitAvailable = await CategoryService.isFullCatalogAvailable();
+    final index = await CategoryService.build();
+    if (mounted) setState(() => _categoryIndex = index);
+  }
+
+  Future<void> _openSettings() async {
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsPage()));
+    // PackageKit availability may have changed (e.g. uninstalled from Settings).
+    setState(() => _categoryIndex = null);
+    await _loadCategories();
+  }
+
+  Future<void> _installPackageKit() async {
+    setState(() => _installingPackageKit = true);
+    try {
+      final exitCode = await DnfService.installTransient('PackageKit.x86_64', (_) {});
+      if (exitCode == 0) {
+        setState(() {
+          _packageKitAvailable = true;
+          _categoryIndex = null;
+        });
+        await _loadCategories();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('PackageKit installed — app categories now available.')),
+          );
+        }
+      } else if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Failed to install PackageKit.')));
+      }
+    } finally {
+      if (mounted) setState(() => _installingPackageKit = false);
+    }
+  }
+
+  /// category: a real category label, or '' as the sentinel for "Other"
+  /// (packages matched by neither AppStream nor comps).
+  Future<void> _filterByCategory(String category) async {
+    setState(() {
+      _activeCategory = category;
+      _selected = null;
+      _searchError = null;
+      _queryController.clear();
+      _stage = Stage.search;
+    });
+    if (_allPackages == null) {
+      setState(() => _loadingCategoryResults = true);
+      try {
+        _allPackages = await DnfService.listAll(repo: _selectedRepo);
+      } catch (e) {
+        setState(() {
+          _searchError = e.toString();
+          _loadingCategoryResults = false;
+        });
+        return;
+      }
+    }
+    final idx = _categoryIndex;
+    setState(() {
+      _loadingCategoryResults = false;
+      if (idx == null) {
+        _results = [];
+      } else if (category == '') {
+        _results = _allPackages!.where((p) => idx.tagsFor(p.name).isEmpty).toList();
+      } else {
+        _results = _allPackages!.where((p) => idx.hasTag(p.name, category)).toList();
+      }
+    });
+  }
 
   Future<void> _doSearch() async {
     final query = _queryController.text.trim();
@@ -49,10 +156,11 @@ class _SearchPageState extends State<SearchPage> {
       _results = [];
       _allPackages = null;
       _selected = null;
+      _activeCategory = null;
       _stage = Stage.search;
     });
     try {
-      final results = await DnfService.search(query);
+      final results = await DnfService.search(query, repo: _selectedRepo);
       setState(() => _results = results);
     } catch (e) {
       setState(() => _searchError = e.toString());
@@ -68,10 +176,11 @@ class _SearchPageState extends State<SearchPage> {
       _results = [];
       _allPackages = null;
       _selected = null;
+      _activeCategory = null;
       _stage = Stage.search;
     });
     try {
-      final all = await DnfService.listAll();
+      final all = await DnfService.listAll(repo: _selectedRepo);
       setState(() {
         _allPackages = all;
         _results = all;
@@ -133,15 +242,71 @@ class _SearchPageState extends State<SearchPage> {
     }
   }
 
+  Future<void> _doUninstall() async {
+    final pkg = _selected;
+    if (pkg == null) return;
+    setState(() => _uninstalling = true);
+    try {
+      final exitCode = await DnfService.uninstall(pkg.nameArch, (line) {
+        setState(() => _installLog.add(line));
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_logScroll.hasClients) {
+            _logScroll.jumpTo(_logScroll.position.maxScrollExtent);
+          }
+        });
+      });
+      if (exitCode == 0) {
+        setState(() {
+          _stage = Stage.search;
+          _launchTargets = [];
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text('${pkg.nameArch} removed.')));
+        }
+      } else if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Uninstall failed — see log.')));
+      }
+    } finally {
+      if (mounted) setState(() => _uninstalling = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Package Launcher (transient installs)')),
+      appBar: AppBar(
+        title: const Text('DNF Package Store'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings),
+            tooltip: 'Settings',
+            onPressed: _openSettings,
+          ),
+        ],
+      ),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            Row(
+              children: [
+                const Text('Channel:'),
+                const SizedBox(width: 8),
+                DropdownButton<String?>(
+                  value: _selectedRepo,
+                  items: [
+                    const DropdownMenuItem(value: null, child: Text('All repos')),
+                    for (final repo in _repos)
+                      DropdownMenuItem(value: repo.id, child: Text(repo.name)),
+                  ],
+                  onChanged: _searching ? null : _onRepoChanged,
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
             Row(
               children: [
                 Expanded(
@@ -170,6 +335,8 @@ class _SearchPageState extends State<SearchPage> {
                 ),
               ],
             ),
+            const SizedBox(height: 12),
+            _buildCategoryBar(),
             const SizedBox(height: 16),
             if (_searchError != null)
               Text(_searchError!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
@@ -182,6 +349,88 @@ class _SearchPageState extends State<SearchPage> {
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildCategoryBar() {
+    final idx = _categoryIndex;
+    final compsLabels = idx == null ? <String>{} : idx.comps.values.expand((s) => s).toSet();
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        ActionChip(
+          label: const Text('Any'),
+          onPressed: _searching ? null : _doListAll,
+        ),
+        if (idx == null)
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 4),
+            child: SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
+          ),
+        if (idx != null)
+          for (final category in appstreamCategories)
+            if (idx.appstream.values.any((tags) => tags.contains(category)))
+              ChoiceChip(
+                label: Text(category),
+                selected: _activeCategory == category,
+                onSelected: (_) => _filterByCategory(category),
+              ),
+        if (!_packageKitAvailable)
+          ActionChip(
+            avatar: _installingPackageKit
+                ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.download, size: 18),
+            label: const Text('Install PackageKit for app categories'),
+            onPressed: _installingPackageKit ? null : _installPackageKit,
+          ),
+        if (idx != null)
+          for (final label in compsLabels)
+            ChoiceChip(
+              label: Text(label),
+              selected: _activeCategory == label,
+              onSelected: (_) => _filterByCategory(label),
+            ),
+        if (idx != null)
+          ChoiceChip(
+            label: const Text('Other'),
+            selected: _activeCategory == '',
+            onSelected: (_) => _filterByCategory(''),
+          ),
+        if (_loadingCategoryResults)
+          const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
+      ],
+    );
+  }
+
+  Widget _buildTags(PackageResult pkg) {
+    final idx = _categoryIndex;
+    if (idx == null) {
+      return const SizedBox(
+        height: 14,
+        width: 14,
+        child: CircularProgressIndicator(strokeWidth: 2),
+      );
+    }
+    final tags = idx.tagsFor(pkg.name).toList()..sort();
+    if (tags.isEmpty) {
+      return Text(
+        'No category tags (shows up under "Other").',
+        style: Theme.of(context).textTheme.bodySmall,
+      );
+    }
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      children: [
+        for (final tag in tags)
+          Chip(
+            label: Text(tag),
+            visualDensity: VisualDensity.compact,
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+      ],
     );
   }
 
@@ -198,16 +447,31 @@ class _SearchPageState extends State<SearchPage> {
             final selected = pkg == _selected;
             return Card(
               color: selected ? Theme.of(context).colorScheme.secondaryContainer : null,
-              child: ListTile(
-                title: Text(pkg.nameArch),
-                subtitle: Text(pkg.summary),
-                trailing: selected
-                    ? FilledButton(
-                        onPressed: _doInstall,
-                        child: const Text('Install (transient)'),
-                      )
-                    : null,
+              child: InkWell(
                 onTap: () => setState(() => _selected = selected ? null : pkg),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(pkg.nameArch, style: Theme.of(context).textTheme.titleMedium),
+                      const SizedBox(height: 4),
+                      Text(pkg.summary),
+                      if (selected) ...[
+                        const SizedBox(height: 10),
+                        _buildTags(pkg),
+                        const SizedBox(height: 10),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: FilledButton(
+                            onPressed: _doInstall,
+                            child: const Text('Install (transient)'),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
               ),
             );
           },
@@ -225,7 +489,15 @@ class _SearchPageState extends State<SearchPage> {
               children: [
                 Icon(Icons.check_circle, color: Colors.green.shade600),
                 const SizedBox(width: 8),
-                Text('${_selected?.nameArch} installed (transient — gone on reboot)'),
+                Expanded(child: Text('${_selected?.nameArch} installed (transient — gone on reboot)')),
+                TextButton.icon(
+                  onPressed: _uninstalling ? null : _doUninstall,
+                  icon: _uninstalling
+                      ? const SizedBox(
+                          width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.delete_outline),
+                  label: Text(_uninstalling ? 'Uninstalling...' : 'Uninstall'),
+                ),
               ],
             ),
             const SizedBox(height: 12),

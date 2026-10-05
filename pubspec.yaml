@@ -1,5 +1,5 @@
-name: pkg_launcher
-description: "A new Flutter project."
+name: dnf_package_store
+description: "A DNF-based package browser and transient installer for Linux."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev

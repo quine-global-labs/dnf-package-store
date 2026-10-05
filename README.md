@@ -1,16 +1,29 @@
-# pkg_launcher
+# DNF Package Store
 
-A new Flutter project.
+A lightweight Flutter desktop app for browsing and trying out packages on
+DNF-based Linux distros (Fedora and friends), without committing to a
+permanent install.
+
+## Features
+
+- Search or browse the full package catalog, scoped to a single repo/channel
+  or across all enabled repos.
+- Browse by category — AppStream app categories and comps groups, shown as
+  tags on each package.
+- Install packages **transiently** (`dnf install --transient`), so test
+  installs disappear automatically on reboot instead of lingering.
+- Launch installed apps directly, or uninstall them immediately.
+- Settings page to uninstall PackageKit (and its AppStream catalog data) if
+  you only wanted it for the richer category listings.
 
 ## Getting Started
 
-This project is a starting point for a Flutter application.
+This is a standard Flutter project targeting Linux desktop. With the Flutter
+SDK on your `PATH`:
 
-A few resources to get you started if this is your first Flutter project:
-
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+```sh
+flutter run -d linux
+```
 
 For help getting started with Flutter development, view the
 [online documentation](https://docs.flutter.dev/), which offers tutorials,

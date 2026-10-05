@@ -1,0 +1,291 @@
+import 'package:flutter/material.dart';
+import 'dnf_service.dart';
+
+void main() {
+  runApp(const PkgLauncherApp());
+}
+
+class PkgLauncherApp extends StatelessWidget {
+  const PkgLauncherApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Package Launcher',
+      theme: ThemeData(colorSchemeSeed: Colors.indigo, useMaterial3: true),
+      home: const SearchPage(),
+    );
+  }
+}
+
+enum Stage { search, installing, installed, failed }
+
+class SearchPage extends StatefulWidget {
+  const SearchPage({super.key});
+
+  @override
+  State<SearchPage> createState() => _SearchPageState();
+}
+
+class _SearchPageState extends State<SearchPage> {
+  final _queryController = TextEditingController();
+  List<PackageResult> _results = [];
+  List<PackageResult>? _allPackages; // cached full listing, for local filtering
+  PackageResult? _selected;
+  bool _searching = false;
+  String? _searchError;
+
+  Stage _stage = Stage.search;
+  final List<String> _installLog = [];
+  final ScrollController _logScroll = ScrollController();
+  List<LaunchTarget> _launchTargets = [];
+
+  Future<void> _doSearch() async {
+    final query = _queryController.text.trim();
+    if (query.isEmpty) return;
+    setState(() {
+      _searching = true;
+      _searchError = null;
+      _results = [];
+      _allPackages = null;
+      _selected = null;
+      _stage = Stage.search;
+    });
+    try {
+      final results = await DnfService.search(query);
+      setState(() => _results = results);
+    } catch (e) {
+      setState(() => _searchError = e.toString());
+    } finally {
+      setState(() => _searching = false);
+    }
+  }
+
+  Future<void> _doListAll() async {
+    setState(() {
+      _searching = true;
+      _searchError = null;
+      _results = [];
+      _allPackages = null;
+      _selected = null;
+      _stage = Stage.search;
+    });
+    try {
+      final all = await DnfService.listAll();
+      setState(() {
+        _allPackages = all;
+        _results = all;
+      });
+    } catch (e) {
+      setState(() => _searchError = e.toString());
+    } finally {
+      setState(() => _searching = false);
+    }
+  }
+
+  void _onQueryChanged(String value) {
+    // Once the full catalog is loaded, typing filters it locally instead of
+    // re-querying dnf, since that listing is already in memory.
+    if (_allPackages == null) return;
+    final needle = value.trim().toLowerCase();
+    setState(() {
+      _results = needle.isEmpty
+          ? _allPackages!
+          : _allPackages!
+              .where((p) =>
+                  p.name.toLowerCase().contains(needle) || p.summary.toLowerCase().contains(needle))
+              .toList();
+      _selected = null;
+    });
+  }
+
+  Future<void> _doInstall() async {
+    final pkg = _selected;
+    if (pkg == null) return;
+    setState(() {
+      _stage = Stage.installing;
+      _installLog.clear();
+      _launchTargets = [];
+    });
+    try {
+      final exitCode = await DnfService.installTransient(pkg.nameArch, (line) {
+        setState(() => _installLog.add(line));
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_logScroll.hasClients) {
+            _logScroll.jumpTo(_logScroll.position.maxScrollExtent);
+          }
+        });
+      });
+      if (exitCode != 0) {
+        setState(() => _stage = Stage.failed);
+        return;
+      }
+      final targets = await DnfService.findLaunchTargets(pkg.name);
+      setState(() {
+        _launchTargets = targets;
+        _stage = Stage.installed;
+      });
+    } catch (e) {
+      setState(() {
+        _installLog.add('Error: $e');
+        _stage = Stage.failed;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Package Launcher (transient installs)')),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _queryController,
+                    decoration: InputDecoration(
+                      labelText: _allPackages == null ? 'Search packages' : 'Filter packages',
+                      border: const OutlineInputBorder(),
+                    ),
+                    onChanged: _onQueryChanged,
+                    onSubmitted: (_) => _doSearch(),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                FilledButton(
+                  onPressed: _searching ? null : _doSearch,
+                  child: _searching
+                      ? const SizedBox(
+                          width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Text('Search'),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton(
+                  onPressed: _searching ? null : _doListAll,
+                  child: const Text('List All'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            if (_searchError != null)
+              Text(_searchError!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+            if (_allPackages != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text('${_results.length} of ${_allPackages!.length} packages'),
+              ),
+            Expanded(child: _buildBody()),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBody() {
+    switch (_stage) {
+      case Stage.search:
+        if (_results.isEmpty) {
+          return const Center(child: Text('Search for a package to begin.'));
+        }
+        return ListView.builder(
+          itemCount: _results.length,
+          itemBuilder: (context, i) {
+            final pkg = _results[i];
+            final selected = pkg == _selected;
+            return Card(
+              color: selected ? Theme.of(context).colorScheme.secondaryContainer : null,
+              child: ListTile(
+                title: Text(pkg.nameArch),
+                subtitle: Text(pkg.summary),
+                trailing: selected
+                    ? FilledButton(
+                        onPressed: _doInstall,
+                        child: const Text('Install (transient)'),
+                      )
+                    : null,
+                onTap: () => setState(() => _selected = selected ? null : pkg),
+              ),
+            );
+          },
+        );
+      case Stage.installing:
+        return _buildLog(trailing: const Padding(
+          padding: EdgeInsets.all(8),
+          child: LinearProgressIndicator(),
+        ));
+      case Stage.installed:
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.check_circle, color: Colors.green.shade600),
+                const SizedBox(width: 8),
+                Text('${_selected?.nameArch} installed (transient — gone on reboot)'),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text('Run:', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            if (_launchTargets.isEmpty)
+              const Text('No runnable executable or desktop entry found for this package.'),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: _launchTargets
+                  .map((t) => FilledButton.tonalIcon(
+                        onPressed: () => DnfService.launch(t),
+                        icon: Icon(t.isDesktopEntry ? Icons.apps : Icons.terminal),
+                        label: Text(t.label),
+                      ))
+                  .toList(),
+            ),
+            const Divider(height: 24),
+            Expanded(child: _buildLog()),
+          ],
+        );
+      case Stage.failed:
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.error, color: Theme.of(context).colorScheme.error),
+                const SizedBox(width: 8),
+                const Text('Install failed.'),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Expanded(child: _buildLog()),
+          ],
+        );
+    }
+  }
+
+  Widget _buildLog({Widget? trailing}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Expanded(
+          child: Container(
+            color: Colors.black87,
+            padding: const EdgeInsets.all(8),
+            child: ListView.builder(
+              controller: _logScroll,
+              itemCount: _installLog.length,
+              itemBuilder: (context, i) => Text(
+                _installLog[i],
+                style: const TextStyle(color: Colors.white, fontFamily: 'monospace', fontSize: 12),
+              ),
+            ),
+          ),
+        ),
+        ?trailing,
+      ],
+    );
+  }
+}

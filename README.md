@@ -25,6 +25,22 @@ SDK on your `PATH`:
 flutter run -d linux
 ```
 
+## Package history
+
+`pkg-history` (repo root) is a separate, standalone script — not part of the
+Flutter app — that lists rpm-ostree deployments (the real revision history on
+an image-based/bootc system like Aurora, as opposed to `dnf history`, which
+doesn't apply here). It's plain Python 3 calling `rpm-ostree`, `journalctl`
+and `getent`, all already on the host, so it needs no build step and no
+toolbox:
+
+```sh
+./pkg-history
+```
+
+The app's "Package history" toolbar button just opens this script in a
+terminal.
+
 For help getting started with Flutter development, view the
 [online documentation](https://docs.flutter.dev/), which offers tutorials,
 samples, guidance on mobile development, and a full API reference.

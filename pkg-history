@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""Lists the package-history ledger at /var/lib/dnf_package_store/history.db
+(see `pkg-apply`, which writes it as root on every install/uninstall this
+app performs). The chain starts at a "baseline" node (zero mods, stock OS)
+and each later node names the action, package and user that applied it.
+
+Read-only, no root needed — the db directory/file are world-readable, same
+convention as /var/lib/rpm-ostree.
+"""
+
+import sqlite3
+import sys
+
+DB_PATH = "/var/lib/dnf_package_store/history.db"
+
+
+def main():
+    try:
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        rows = conn.execute(
+            "SELECT id, parent_id, action, package, applied_by, applied_at FROM revisions ORDER BY id"
+        ).fetchall()
+        conn.close()
+    except sqlite3.OperationalError:
+        print("No history recorded yet — nothing has been installed or removed through "
+              "DNF Package Store.")
+        sys.exit(0)
+
+    if not rows:
+        print("No history recorded yet.")
+        return
+
+    current_id = rows[-1][0]
+    for id_, parent_id, action, package, applied_by, applied_at in rows:
+        marker = "* current" if id_ == current_id else "  "
+        if action == "baseline":
+            desc = "stock OS, zero mods"
+        else:
+            desc = f"{action} {package}"
+        print(f"{marker} #{id_}  {desc}")
+        print(f"       by: {applied_by}  at: {applied_at}")
+        if id_ != current_id:
+            print()
+
+
+if __name__ == "__main__":
+    main()

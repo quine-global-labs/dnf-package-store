@@ -4,17 +4,9 @@ import 'package:flutter/material.dart';
 import 'dnf_service.dart';
 import 'category_service.dart';
 import 'settings_page.dart';
-import 'history_page.dart';
 
 void main(List<String> args) {
-  // The history browser runs as its own OS process/window rather than a
-  // page within this app, launched by re-invoking this same executable
-  // with --history (see _openHistory below).
-  if (args.contains('--history')) {
-    runApp(const HistoryApp());
-  } else {
-    runApp(const DnfPackageStoreApp());
-  }
+  runApp(const DnfPackageStoreApp());
 }
 
 class DnfPackageStoreApp extends StatelessWidget {
@@ -91,18 +83,39 @@ class _SearchPageState extends State<SearchPage> {
     if (mounted) setState(() => _categoryIndex = index);
   }
 
+  /// Package history lives outside this app now (see `pkg-history` at the
+  /// repo root) — it's a plain script reading rpm-ostree deployments, with
+  /// no Flutter/GTK build required. This just opens it in a terminal.
   Future<void> _openHistory() async {
-    try {
-      await Process.start(
-        Platform.resolvedExecutable,
-        [...Platform.executableArguments, '--history'],
-        mode: ProcessStartMode.detached,
-      );
-    } catch (e) {
+    final script = File('pkg-history').absolute.path;
+    if (!await File(script).exists()) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Failed to open history window: $e')));
+            .showSnackBar(SnackBar(content: Text('pkg-history script not found at $script')));
       }
+      return;
+    }
+    const terminals = [
+      ['konsole', '-e'],
+      ['gnome-terminal', '--'],
+      ['xterm', '-e'],
+    ];
+    for (final terminal in terminals) {
+      if ((await Process.run('which', [terminal[0]])).exitCode != 0) continue;
+      try {
+        await Process.start(
+          terminal[0],
+          [...terminal.sublist(1), 'bash', '-c', '$script; read -p "Press Enter to close..."'],
+          mode: ProcessStartMode.detached,
+        );
+        return;
+      } catch (_) {
+        continue;
+      }
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('No terminal emulator found to show package history.')));
     }
   }
 

@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Privileged helper: runs a dnf install/remove, and on success appends a
+node to the package-history ledger. Invoked via pkexec (needs root both for
+dnf and to write under /var/lib, matching how /var/lib/rpm-ostree is root-
+owned but world-readable).
+
+Usage: pkg-apply <install|uninstall> <package.arch> <acting-user>
+"""
+
+import os
+import sqlite3
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+DB_DIR = "/var/lib/dnf_package_store"
+DB_PATH = f"{DB_DIR}/history.db"
+
+
+def ensure_db():
+    if not os.path.isdir(DB_DIR):
+        os.makedirs(DB_DIR, mode=0o755)
+    os.chmod(DB_DIR, 0o755)
+    is_new = not os.path.exists(DB_PATH)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS revisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            parent_id INTEGER,
+            action TEXT NOT NULL,
+            package TEXT,
+            applied_by TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        )
+    """)
+    if conn.execute("SELECT COUNT(*) FROM revisions").fetchone()[0] == 0:
+        conn.execute(
+            "INSERT INTO revisions (parent_id, action, package, applied_by, applied_at) VALUES (NULL, ?, NULL, ?, ?)",
+            ("baseline", "system", datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+    conn.close()
+    if is_new:
+        os.chmod(DB_PATH, 0o644)
+    return conn
+
+
+def record_change(action, package, user):
+    conn = sqlite3.connect(DB_PATH)
+    head = conn.execute("SELECT id FROM revisions ORDER BY id DESC LIMIT 1").fetchone()[0]
+    conn.execute(
+        "INSERT INTO revisions (parent_id, action, package, applied_by, applied_at) VALUES (?, ?, ?, ?, ?)",
+        (head, action, package, user, datetime.now(timezone.utc).isoformat()),
+    )
+    conn.commit()
+    conn.close()
+    os.chmod(DB_PATH, 0o644)
+
+
+def main():
+    if len(sys.argv) != 4 or sys.argv[1] not in ("install", "uninstall"):
+        print("usage: pkg-apply <install|uninstall> <package.arch> <acting-user>", file=sys.stderr)
+        sys.exit(2)
+    action, package, user = sys.argv[1], sys.argv[2], sys.argv[3]
+
+    ensure_db()
+
+    if action == "install":
+        cmd = ["dnf", "install", "--transient", "-y", package]
+    else:
+        cmd = ["dnf", "remove", "-y", package]
+
+    result = subprocess.run(cmd)
+    if result.returncode == 0:
+        record_change(action, package, user)
+    sys.exit(result.returncode)
+
+
+if __name__ == "__main__":
+    main()

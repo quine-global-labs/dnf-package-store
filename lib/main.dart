@@ -1,10 +1,20 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'dnf_service.dart';
 import 'category_service.dart';
 import 'settings_page.dart';
+import 'history_page.dart';
 
-void main() {
-  runApp(const DnfPackageStoreApp());
+void main(List<String> args) {
+  // The history browser runs as its own OS process/window rather than a
+  // page within this app, launched by re-invoking this same executable
+  // with --history (see _openHistory below).
+  if (args.contains('--history')) {
+    runApp(const HistoryApp());
+  } else {
+    runApp(const DnfPackageStoreApp());
+  }
 }
 
 class DnfPackageStoreApp extends StatelessWidget {
@@ -79,6 +89,21 @@ class _SearchPageState extends State<SearchPage> {
     _packageKitAvailable = await CategoryService.isFullCatalogAvailable();
     final index = await CategoryService.build();
     if (mounted) setState(() => _categoryIndex = index);
+  }
+
+  Future<void> _openHistory() async {
+    try {
+      await Process.start(
+        Platform.resolvedExecutable,
+        [...Platform.executableArguments, '--history'],
+        mode: ProcessStartMode.detached,
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Failed to open history window: $e')));
+      }
+    }
   }
 
   Future<void> _openSettings() async {
@@ -279,6 +304,11 @@ class _SearchPageState extends State<SearchPage> {
       appBar: AppBar(
         title: const Text('DNF Package Store'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.history),
+            tooltip: 'Package history',
+            onPressed: _openHistory,
+          ),
           IconButton(
             icon: const Icon(Icons.settings),
             tooltip: 'Settings',

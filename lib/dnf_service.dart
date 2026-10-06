@@ -32,6 +32,22 @@ class RepoInfo {
   RepoInfo({required this.id, required this.name});
 }
 
+class HistoryEntry {
+  final int id;
+  final String commandLine;
+  final String dateTime;
+  final String action;
+  final int altered;
+
+  HistoryEntry({
+    required this.id,
+    required this.commandLine,
+    required this.dateTime,
+    required this.action,
+    required this.altered,
+  });
+}
+
 class DnfService {
   /// Lists enabled repos (the "channels" a package can come from).
   static Future<List<RepoInfo>> listRepos() async {
@@ -191,6 +207,44 @@ class DnfService {
       }
     }
     return targets;
+  }
+
+  /// Lists the system's applied-transaction history (`dnf history list`),
+  /// newest first. Transactions are strictly sequential, so the highest id
+  /// is always the current state and the lowest id is the original release
+  /// the system was first installed from.
+  static Future<List<HistoryEntry>> historyList() async {
+    final result = await Process.run('dnf', ['history', 'list']);
+    if (result.exitCode != 0) {
+      throw Exception('dnf history list failed: ${result.stderr}');
+    }
+    final entries = <HistoryEntry>[];
+    for (final line in (result.stdout as String).split('\n')) {
+      if (!line.contains('|')) continue; // skips the dashed separator row
+      final parts = line.split('|').map((p) => p.trim()).toList();
+      if (parts.length < 5) continue;
+      final id = int.tryParse(parts[0]);
+      if (id == null) continue; // skips the header row ("ID | ...")
+      entries.add(HistoryEntry(
+        id: id,
+        commandLine: parts[1],
+        dateTime: parts[2],
+        action: parts[3],
+        altered: int.tryParse(RegExp(r'\d+').firstMatch(parts[4])?.group(0) ?? '') ?? 0,
+      ));
+    }
+    entries.sort((a, b) => b.id.compareTo(a.id));
+    return entries;
+  }
+
+  /// Full detail for one transaction (`dnf history info <id>`), i.e. the
+  /// individual package changes it applied.
+  static Future<String> historyInfo(int id) async {
+    final result = await Process.run('dnf', ['history', 'info', '$id']);
+    if (result.exitCode != 0) {
+      throw Exception('dnf history info failed: ${result.stderr}');
+    }
+    return result.stdout as String;
   }
 
   /// Launches a desktop entry (via gtk-launch) or a raw binary, detached

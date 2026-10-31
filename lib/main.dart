@@ -85,9 +85,14 @@ class _SearchPageState extends State<SearchPage> {
 
   /// Package history lives outside this app now (see `pkg-history` at the
   /// repo root) — it's a plain script reading rpm-ostree deployments, with
-  /// no Flutter/GTK build required. This just opens it in a terminal.
+  /// no Flutter/GTK build required. This just opens it in a terminal. It's
+  /// next to the executable when installed (the RPM puts both in
+  /// /usr/libexec/dnf-package-store/), or in the working directory when run
+  /// from a checkout (run.sh).
   Future<void> _openHistory() async {
-    final script = File('pkg-history').absolute.path;
+    final installed = '${File(Platform.resolvedExecutable).parent.path}/pkg-history';
+    final script =
+        await File(installed).exists() ? installed : File('pkg-history').absolute.path;
     if (!await File(script).exists()) {
       if (mounted) {
         ScaffoldMessenger.of(context)

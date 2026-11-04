@@ -13,7 +13,7 @@ Version:        %{version_}
 Release:        %{release_}%{?dist}
 Summary:        Browse DNF packages and try them out with transient installs
 License:        LicenseRef-Not-Specified
-URL:            https://forge.quinefoundation.com/quine-global-labs/dnf-package-store
+URL:            https://forge.in.quineglobal.com/quine-global-labs/dnf-package-store
 ExclusiveArch:  x86_64 aarch64
 
 Requires:       gtk3
